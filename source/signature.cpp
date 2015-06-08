@@ -32,7 +32,9 @@ constexpr size_t BLOCK_CRC_MAP_PROCESSING_SIZE = 100;
 }
 
 /**
- *
+ * Supporting class to handle a size of a block which consists of two
+ * parts: a numeric part and a suffix, represented by K (kilobytes),
+ * M (megabytes), and G (gigabytes) symbols.
  */
 class block_size
 {
@@ -45,14 +47,14 @@ public:
    block_size(uint64_t number) : number_(number), suffix_(1)
    { }
 
-   // Sets numeric and suffix parts of the block size and checks them to be correct.
+   // Sets a numeric part and a suffix of the block_size and checks them to be correct.
    bool set(uint64_t number, char suffix)
    {
       uint64_t tmp = 1;
 
       if (suffix != 0)
       {
-         // If suffix was provided check it to be in range (K, M, G).
+         // If suffix was provided, check if it's in range (K, M, G).
          switch (suffix)
          {
             case 'K': tmp = BLOCK_SIZE_KILOBYTE; break;
@@ -88,7 +90,7 @@ public:
 };
 
 /**
- *
+ * Overload function for validation of block_size class objects needed for boost::program_options.
  */
 void validate(boost::any & value, const std::vector<std::string> & string_values, block_size * target_type, int)
 {
@@ -97,6 +99,7 @@ void validate(boost::any & value, const std::vector<std::string> & string_values
    boost::program_options::validators::check_first_occurrence(value);
    boost::smatch match;
 
+   // Match parts of block_size according to regex.
    if (regex_match(boost::program_options::validators::get_single_string(string_values), match, r))
    {
       uint64_t number;
@@ -131,9 +134,6 @@ void validate(boost::any & value, const std::vector<std::string> & string_values
    );
 }
 
-/**
- *
- */
 int main(int argc, char ** argv)
 {
    // Set default block size.
@@ -143,7 +143,7 @@ int main(int argc, char ** argv)
    bpo::options_description desc;
    bpo::variables_map vm;
 
-   // Form a map of application options that provide user interface using boost::program_options.
+   // Make a map of application options that provide user interface using boost::program_options.
    desc.add_options()
          ("help,h", "print help")
          ("input,i",  bpo::value<std::string>(&input_file_name)->required(),   "input file")
@@ -179,7 +179,6 @@ int main(int argc, char ** argv)
    std::cout << "output file = " << output_file_name       << std::endl;
    std::cout << "block  size = " << block_size_value.get() << std::endl;
 
-
    std::ifstream input_file { input_file_name, std::ios::binary };
 
    if (!input_file.is_open())
@@ -209,10 +208,13 @@ int main(int argc, char ** argv)
    {
       while (true)
       {
+         // Search for a checksum for a current block.
          auto block = block_crc_map.find(last_processed_block_id);
 
          if (block_crc_map.end() != block)
          {
+            // If the checksum for the block has been calculated, save it
+            // to the output stream and move to a next block.
             output_file_stream.write(reinterpret_cast<char *>(&block->second), sizeof(block->second));
             last_processed_block_id++;
          }
@@ -223,36 +225,64 @@ int main(int argc, char ** argv)
    // Get an instance of the thread pool.
    auto & tp = thool::thread_pool::instance();
 
+   // Reading a data from the input stream till the end.
    while (!input_file.eof())
    {
-      // Create temporary buffer to get block's data from input file.
+      // Create a temporary buffer to get block's data from input file.
       std::shared_ptr<std::vector<char>> buffer_ptr;
       std::streamsize readed_size;
 
       try
       {
+         // Allocate vector of size block_size and put it to a shared pointer,
+         // cause it should be available for a task out of scope of the cycle.
          buffer_ptr = std::make_shared<std::vector<char>>(block_size_value.get(), 0);
+         // Read data from input stream to buffer, which size is equal to block_size.
          input_file.read(buffer_ptr->data(), buffer_ptr->size());
+         // Get real amount of data that was read.
          readed_size = input_file.gcount();
-
-         // ToDo more intellectual exception handling
       }
-      catch (std::exception & e)
+      catch (const std::bad_alloc & err)
       {
-         std::cerr << e.what() << std::endl;
-         break;
+         // Not enough memory to create a new buffer. Wait till active tasks will be finished.
+         std::this_thread::sleep_for(std::chrono::milliseconds(10));
+         // And repeat current cycle.
+         continue;
+      }
+      catch (const std::exception & err)
+      {
+         std::cerr << "unexpected exception: " << err.what() << std::endl;
+         tp.stop();
+         return EXIT_FAILURE;
       }
 
       //
       auto task = [buffer_ptr, readed_size, &block_crc_map, &block_crc_map_mutex, block_counter]()
       {
          boost::crc_32_type crc_hash;
+         // Calculate CRC32 hash for a given data in the buffer.
          crc_hash.process_bytes(buffer_ptr->data(), readed_size);
+         // Get resulting checksum.
          boost::crc_32_type::value_type crc_value = crc_hash.checksum();
-         std::lock_guard<std::mutex> lock(block_crc_map_mutex);
-         if (!block_crc_map.insert({ block_counter, crc_value }).second)
+         // Free up memory hold by buffer.
+         buffer_ptr->clear();
+         buffer_ptr->shrink_to_fit();
+
+         while (true)
          {
-            std::cerr << "block " << block_counter << " insert error" << std::endl; // FixMe
+            try
+            {
+               std::lock_guard<std::mutex> lock(block_crc_map_mutex);
+               // Inserting a checksum of the block into the map to keep order of blocks.
+               block_crc_map.insert({ block_counter, crc_value });
+               // Break out of the cycle.
+               break;
+            }
+            catch (const std::bad_alloc & err)
+            {
+               // Put task to sleep, to wait for free memory.
+               std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
          }
       };
       tp.add_task
@@ -261,16 +291,15 @@ int main(int argc, char ** argv)
       );
       block_counter++;
 
-      //
       std::lock_guard<std::mutex> lock(block_crc_map_mutex);
-      //
-      if (block_crc_map.size() >= BLOCK_CRC_MAP_PROCESSING_SIZE)
-         crc_saver();
+      // Wait while map will have a number of checksums to be processed.
+      if (block_crc_map.size() >= BLOCK_CRC_MAP_PROCESSING_SIZE) crc_saver();
    }
 
-   //
    while (last_processed_block_id != block_counter)
    {
+      // Processing remaining checksums by calling crc_saver every 10 ms
+      // to be sure if some tasks are finished.
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
       std::lock_guard<std::mutex> lock(block_crc_map_mutex);
       crc_saver();
