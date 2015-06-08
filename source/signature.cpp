@@ -140,34 +140,39 @@ int main(int argc, char ** argv)
    block_size block_size_value { BLOCK_SIZE_MEGABYTE };
 
    std::string input_file_name, output_file_name;
-   bpo::options_description desc;
+   bpo::options_description help_desc, main_desc, desc;
    bpo::variables_map vm;
 
    // Make a map of application options that provide user interface using boost::program_options.
-   desc.add_options()
-         ("help,h", "print help")
+   help_desc.add_options()
+         ("help,h", "print help");
+   main_desc.add_options()
          ("input,i",  bpo::value<std::string>(&input_file_name)->required(),   "input file")
          ("output,o", bpo::value<std::string>(&output_file_name)->required(),  "output file to store input file's signature")
          ("block,b",  bpo::value<block_size> (&block_size_value),              "size of a processing block in bytes (1K, 1M, 1G)");
+   desc.add(help_desc).add(main_desc);
 
    try
    {
       // Process application arguments.
       bpo::store(bpo::parse_command_line(argc, argv, desc), vm);
+
+      if (vm.count("help") || (argc == 1))
+      {
+         std::cout << desc << std::endl;
+         return EXIT_SUCCESS;
+      }
+
       bpo::notify(vm);
    }
    catch (std::exception & e)
    {
       std::cerr << e.what() << std::endl;
+      std::cout << desc << std::endl;
       return EXIT_FAILURE;
    }
 
    // Check application arguments for special cases and limitations.
-   if (vm.count("help") || (argc == 1))
-   {
-      std::cout << desc << std::endl;
-      return EXIT_SUCCESS;
-   }
    if (input_file_name == output_file_name)
    {
       std::cerr << "input and output files are same" << std::endl;
