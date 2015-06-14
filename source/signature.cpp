@@ -96,11 +96,11 @@ void validate(boost::any & value, const std::vector<std::string> & string_values
 {
    static const boost::regex r("(^\\d+)([K|M|G]?$)");
 
-   boost::program_options::validators::check_first_occurrence(value);
+   bpo::validators::check_first_occurrence(value);
    boost::smatch match;
 
    // Match parts of block_size according to regex.
-   if (regex_match(boost::program_options::validators::get_single_string(string_values), match, r))
+   if (regex_match(bpo::validators::get_single_string(string_values), match, r))
    {
       uint64_t number;
       std::string suffix;
@@ -114,9 +114,9 @@ void validate(boost::any & value, const std::vector<std::string> & string_values
       }
       catch (boost::bad_lexical_cast & e)
       {
-         throw boost::program_options::validation_error
+         throw bpo::validation_error
          (
-               boost::program_options::validation_error::invalid_option_value
+               bpo::validation_error::invalid_option_value
          );
       }
 
@@ -128,9 +128,9 @@ void validate(boost::any & value, const std::vector<std::string> & string_values
          return;
       }
    }
-   throw boost::program_options::validation_error
+   throw bpo::validation_error
    (
-         boost::program_options::validation_error::invalid_option_value
+         bpo::validation_error::invalid_option_value
    );
 }
 
@@ -261,7 +261,6 @@ int main(int argc, char ** argv)
          return EXIT_FAILURE;
       }
 
-      //
       auto task = [buffer_ptr, readed_size, &block_crc_map, &block_crc_map_mutex, block_counter]()
       {
          boost::crc_32_type crc_hash;
@@ -292,7 +291,7 @@ int main(int argc, char ** argv)
       };
       tp.add_task
       (
-            std::make_shared<thool::task>(std::move(task), 0)
+            std::make_shared<thool::task>(task, 0)
       );
       block_counter++;
 
